@@ -1,0 +1,195 @@
+1.Window Handling (Popups & Tabs)
+The Question:
+"You click a button that opens a third-party payment gateway in a new tab. How do you capture that tab, and why is using Promise.all essential here instead of just awaiting the click first?"
+The Problem: When you await a click, the code execution pauses until the click action is complete. During that micro-second, the browser might have already opened the new tab. If your waitForEvent('page') starts after that, it misses the "open" event entirely, and your test hangs forever.
+The Solution: Promise.all creates a "listening" state and an "action" state simultaneously.
+
+Step-by-step:
+
+Test clicks button
+Browser immediately opens new tab
+Playwright finishes the click
+Then Playwright starts waiting for the new page event
+
+But the problem is:
+
+The tab might have already opened before Playwright started listening.
+
+So Playwright misses the event.
+
+Then the test waits forever ⏳
+
+Promise.all makes two things happen at the same time:
+
+Start listening for new tab
+Click the button
+
+So Playwright is already ready to catch the event.
+
+const [newPage] = await Promise.all([
+  context.waitForEvent('page'),
+  page.click('#pay')
+]);
+
+You are waiting for a bus 🚌
+
+Wrong way:
+
+Friend says bus came
+Then you go to bus stop
+
+You already missed the bus.
+
+Correct way:
+You go to bus stop first, then wait for the bus.
+
+That is exactly what Promise.all does.
+
+2."When would you choose CSV over JSON for test data? How do you iterate through a JSON array to generate dynamic test cases in Playwright?"
+Use for Data-Driven Testing (DDT) where you have hundreds of permutations of the same flat fields (e.g., a search field test with 500 different strings). It’s memory-efficient for the runner.
+json:
+ex :
+[
+  {
+    "username": "admin_user",
+    "role": "admin",
+    "details": {
+      "permissions": ["create_user", "delete_user", "edit_settings"],
+      "accessLevel": 10
+    }
+  },
+  {
+    "username": "guest_user",
+    "role": "guest",
+    "details": {
+      "viewOnly": true,
+      "expiryDays": 7
+    }
+  }
+]
+Best for nested, hierarchical data or when specific keys vary per object.
+Iteration in Playwright
+
+3.You saved storageState yesterday but tests fail today due to expired auth tokens. How would your framework detect this and automatically refresh state without human intervention?
+
+if (await page.locator('.login-button').isVisible()) {
+  await loginAndSaveState();
+}
+When you save login state in Playwright:
+
+await context.storageState({ path: 'auth.json' });
+
+Important things stored:
+
+Session cookies
+Auth tokens
+Local storage
+Session storage
+
+This allows tests to skip login.
+
+Most applications use expiring tokens.
+
+Example:
+
+JWT token expiry → 24 hours
+Session cookie expiry → few hours
+
+So next day:
+
+Test loads saved state → token expired → app redirects to login page ❌
+
+Your tests fail.
+
+The Goal of Framework
+
+Framework should automatically:
+
+Detect session expired
+Login again
+Save new storage state
+Continue tests
+
+Without manual intervention.
+
+
+
+
+4.Explain how you structure .env.qa, .env.staging, .env.prod, and how your Playwright config dynamically selects the correct values at runtime.
+import dotenv from 'dotenv';
+const env = process.env.ENV || 'qa';
+dotenv.config({ path: `.env.${env}` });
+
+export default defineConfig({
+  use: { baseURL: process.env.BASE_URL }
+});
+
+5.Your CI must run smoke tests on PRs and full regression on nightly builds. How will you configure Playwright test runner to support this?
+
+ Use tags (e.g., @smoke) and grep.
+Command Line:
+Smoke (PR): npx playwright test --grep @smoke
+
+ - name: Run Smoke Tests
+      if: github.event_name == 'pull_request'
+      run: npx playwright test --grep @smoke
+
+    # RUN FULL REGRESSION ON SCHEDULE
+    - name: Run Full Regression
+      if: github.event_name == 'schedule'
+      run: npx playwright test
+
+6.You want smoke tests to run first with minimal retries, and full regression to run later with retries and videos. How would you split this using Playwright config?
+
+
+projects: [
+  {
+    name: 'Smoke',
+    testMatch: /.*smoke.spec.ts/,
+    retries: 0,
+  },
+  {
+    name: 'Regression',
+    testIgnore: /.*smoke.spec.ts/,
+    retries: 2,
+    use: { video: 'on', trace: 'retain-on-failure' },
+  },
+]
+Logical Separation via testMatch and testIgnore
+testMatch in Smoke: This ensures the Smoke project only looks for files ending in .smoke.spec.ts. It creates a focused, high-speed execution gate.
+testIgnore in Regression: In a full regression, you often want to run everything. However, if your Smoke tests are already running in a different CI job, you might use testIgnore to prevent redundancy,
+
+npx playwright test --project=Smoke: Runs only the fast, zero-retry tests.
+npx playwright test --project=Regression: Runs the heavy, resilient suite.
+
+7.“In the CSV file, some rows have extra optional fields (e.g. discount codes) that only apply if non-empty. How would you handle these optional fields in a robust Playwright parameterized test?
+
+When parsing the CSV, use the columns: true and relax_column_count: true options. This prevents the parser from throwing an error if Row 5 has 3 columns but Row 6 only has 2.
+typescript
+const records = parse(fs.readFileSync('data.csv'), {
+  columns: true,
+  skip_empty_lines: true,
+  relax_column_count: true // Don't crash if columns are missing
+});
+
+
+8.How do you conditionally skip a test only on the 'Production' environment using annotations?"
+
+The Answer: Use test.skip(). You combine it with your .env logic to ensure certain tests (like "Delete User") never run on Live.
+test('Delete User Account', async ({ page }) => {
+  // If the environment is 'prod', this test will be skipped immediately
+  test.skip(process.env.ENV === 'prod', 'Data deletion is not allowed in Production');
+ 
+  await page.goto('/settings');
+  await page.click('#delete-account');
+});
+Use code with caution.
+
+9."What is the difference between test.describe.configure({ mode: 'serial' }) and test.describe.parallel()?"
+The Answer:
+mode: 'serial': Runs tests in the same file one after another. Crucially, if one test fails, all subsequent tests in that file are skipped. Use this for dependent flows (e.g., Test 1: Create User, Test 2: Edit User, Test 3: Delete User). [1, 2]
+parallel(): Forces Playwright to run tests within a single file across multiple workers simultaneously to save time. [3, 4]
+
+10.You have a very heavy test that takes 2 minutes, but your global timeout is 30 seconds. How do you handle this without changing the global config?"
+The Answer: Use test.slow().
+This annotation triples the default timeout for that specific test. If your global timeout is 30s, test.slow() makes it 90s.
